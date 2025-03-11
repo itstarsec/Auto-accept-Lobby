@@ -8,8 +8,52 @@ import sys
 import psutil
 from colorama import Fore, Back, Style
 import threading  # Import threading
-import keyboard  # Thư viện để lắng nghe phím
+from PIL import Image, ImageDraw
+import pystray
+from pystray import MenuItem, Icon
+from threading import Thread
+import time
+from pynput.keyboard import Key, Controller  # Nhập thư viện pynput
+import keyboard
 
+# Tạo một đối tượng Controller để điều khiển bàn phím
+keyboard_controller = Controller()
+
+def create_image(width, height):
+    # Tạo hình ảnh và vẽ hình chữ nhật
+    image = Image.new('RGB', (width, height), (255, 255, 255))
+    dc = ImageDraw.Draw(image)
+
+    # Vẽ một hình tròn màu đen
+    dc.ellipse((0, 0, width, height), fill=(0, 0, 0))
+    
+    return image
+
+def on_quit(icon, item):
+    print("Quitting the application...")
+    # Gọi tổ hợp phím Ctrl+C
+    keyboard_controller.press(Key.ctrl)
+    keyboard_controller.press('c')
+    keyboard_controller.release('c')
+    keyboard_controller.release(Key.ctrl)
+    icon.stop()  # Dừng icon tray
+
+def setup(icon):
+    icon.visible = True
+    print("Tray icon is set up and visible.")
+
+# Tạo icon tray
+tray_icon = Icon("test_icon", create_image(64, 64), "Tray Icon", menu=pystray.Menu(
+    MenuItem("Exit", on_quit)
+))
+
+# Chạy icon trong một thread riêng
+tray_thread = Thread(target=tray_icon.run, args=(setup,))
+tray_thread.daemon = True
+tray_thread.start()
+
+
+    
 def find_game_directory():
     possible_executables = [
         'RiotClientServices.exe',
@@ -308,90 +352,93 @@ exit_thread = threading.Thread(target=listen_for_exit)
 exit_thread.start()
 
 setPriority = False
+try:
+    while True:
+        time.sleep(1)
+        if stop_event.is_set():  # Kiểm tra cờ dừng
+            print("Đang dừng chương trình...")
+            break
+    # Chạy một vòng lặp để giữ ứng dụng hoạt động
+        if championIdx >= len(championsPrio):
+            championIdx = 0
 
-while True:
-    if stop_event.is_set():  # Kiểm tra cờ dừng
-        print("Đang dừng chương trình...")
-        break
+        r = request('get', '/lol-gameflow/v1/gameflow-phase')
 
-    if championIdx >= len(championsPrio):
-        championIdx = 0
-
-    r = request('get', '/lol-gameflow/v1/gameflow-phase')
-
-    if r.status_code != 200:
-        print(Back.BLACK + Fore.RED + str(r.status_code) + Style.RESET_ALL, r.text)
-        continue
-    print(Back.BLACK + Fore.GREEN + str(r.status_code) + Style.RESET_ALL, r.text)
-
-    phase = r.json()
-
-    if championIdx != 0 and phase != 'ChampSelect':
-        championIdx = 0
-
-    if phase == 'ReadyCheck':
-        r = request('post', '/lol-matchmaking/v1/ready-check/accept')
-        sleep(5)
-
-    elif phase == 'ChampSelect':
-        r = request('get', '/lol-champ-select/v1/session')
         if r.status_code != 200:
+            print(Back.BLACK + Fore.RED + str(r.status_code) + Style.RESET_ALL, r.text)
             continue
+        print(Back.BLACK + Fore.GREEN + str(r.status_code) + Style.RESET_ALL, r.text)
 
-        cs = r.json()
-        actorCellId = next((member['cellId'] for member in cs['myTeam'] if member['summonerId'] == summonerId), -1)
+        phase = r.json()
 
-        if actorCellId == -1:
-            continue
+        if championIdx != 0 and phase != 'ChampSelect':
+            championIdx = 0
 
-        for action in cs['actions'][0]:
-            if action['actorCellId'] != actorCellId:
+        if phase == 'ReadyCheck':
+            r = request('post', '/lol-matchmaking/v1/ready-check/accept')
+            sleep(5)
+
+        elif phase == 'ChampSelect':
+            r = request('get', '/lol-champ-select/v1/session')
+            if r.status_code != 200:
                 continue
 
-            if action['championId'] == 0:
-                championId = championsPrio[championIdx]
-                championIdx += 1
+            cs = r.json()
+            actorCellId = next((member['cellId'] for member in cs['myTeam'] if member['summonerId'] == summonerId), -1)
 
-                url = f'/lol-champ-select/v1/session/actions/{action["id"]}'
-                data = {'championId': championId}
+            if actorCellId == -1:
+                continue
 
-                championName = champions[str(championId)]
-                print('Picking', championName, '(%d)' % championId, '..')
+            for action in cs['actions'][0]:
+                if action['actorCellId'] != actorCellId:
+                    continue
 
-                r = request('patch', url, '', data)
-                print(r.status_code, r.text)
+                if action['championId'] == 0:
+                    championId = championsPrio[championIdx]
+                    championIdx += 1
 
-                if championLock and not action['completed']:
-                    r = request('post', url + '/complete', '', data)
+                    url = f'/lol-champ-select/v1/session/actions/{action["id"]}'
+                    data = {'championId': championId}
+
+                    championName = champions[str(championId)]
+                    print('Picking', championName, '(%d)' % championId, '..')
+
+                    r = request('patch', url, '', data)
                     print(r.status_code, r.text)
 
-    elif phase == 'InProgress':
-        if not setPriority:
-            for p in psutil.process_iter():
-                name, exe, cmdline = '', '', []
-                try:
-                    name = p.name()
-                    cmdline = p.cmdline()
-                    exe = p.exe()
-                    if p.name() == 'League of Legends.exe' or os.path.basename(p.exe()) == 'League of Legends.exe':
-                        p.nice(psutil.HIGH_PRIORITY_CLASS)
-                        print('Set high process priority!')
-                        break
-                except (psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-                except psutil.NoSuchProcess:
-                    continue
-            setPriority = True
+                    if championLock and not action['completed']:
+                        r = request('post', url + '/complete', '', data)
+                        print(r.status_code, r.text)
 
-        if stopWhenMatchStarts:
-            break
-        else:
-            sleep(9)
+        elif phase == 'InProgress':
+            if not setPriority:
+                for p in psutil.process_iter():
+                    name, exe, cmdline = '', '', []
+                    try:
+                        name = p.name()
+                        cmdline = p.cmdline()
+                        exe = p.exe()
+                        if p.name() == 'League of Legends.exe' or os.path.basename(p.exe()) == 'League of Legends.exe':
+                            p.nice(psutil.HIGH_PRIORITY_CLASS)
+                            print('Set high process priority!')
+                            break
+                    except (psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+                    except psutil.NoSuchProcess:
+                        continue
+                setPriority = True
 
-    elif phase in ['Matchmaking', 'Lobby', 'None']:
-        setPriority = False
+            if stopWhenMatchStarts:
+                break
+            else:
+                sleep(9)
 
-    sleep(1)
+        elif phase in ['Matchmaking', 'Lobby', 'None']:
+            setPriority = False
 
+        sleep(1)
+except KeyboardInterrupt:
+    tray_icon.stop()
+    keyboard.wait('ctrl+c')
 # Khi kết thúc, đợi cho luồng thoát
 exit_thread.join()  # Chờ luồng thoát
